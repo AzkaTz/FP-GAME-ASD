@@ -15,21 +15,21 @@ import javax.swing.Timer;
 /**
  * AdventureGame - Full single-file implementation (updated)
  * - Avatar selection
- * - Boss encounters (now correctly triggered)
+ * - Boss encounters (trigger only when landing)
  * - Ladders (random) — can only be used if the player STARTED the turn on a PRIME
  * - Persistent score records (~/.adventure_scores.ser)
  * - Dice animation + sound hooks
  * - Prime tiles highlighted (dark brown)
  * - Random points assigned to each tile (1..10) and awarded on landing (tile points persist across match)
- * - Winner determined after ALL players finish. Score = points + stars*STAR_VALUE
+ * - Winner determined by points + stars*STAR_TO_POINT
  *
- * UI improvements: typography, spacing, grouped buttons, consistent sizes, clearer labels.
+ * + Background music loop feature: backsoundGame.wav
  *
  * Usage:
  *   javac AdventureGame.java
  *   java AdventureGame
  *
- * Optional sound files in working dir or resources: crash-spin.wav, move.wav, confetti.wav
+ * Optional sound files in working dir or resources: crash-spin.wav, move.wav, confetti.wav, backsoundGame.wav
  */
 public class AdventureGame extends JFrame {
     private static final int BOARD_CELLS = 64;
@@ -77,6 +77,9 @@ public class AdventureGame extends JFrame {
     // running audio clips ref
     private final java.util.List<Clip> runningClips = Collections.synchronizedList(new ArrayList<>());
 
+    // background loop clip (kept separate for easy stop)
+    private Clip backgroundClip = null;
+
     public AdventureGame() {
         random = new Random();
         players = new ArrayList<>();
@@ -88,6 +91,21 @@ public class AdventureGame extends JFrame {
 
         loadScores();
         initializeUI();
+
+        // ensure audio resources are stopped when window closes
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                stopBackgroundLoop();
+                // stop any running clips
+                synchronized (runningClips) {
+                    for (Clip c : new ArrayList<>(runningClips)) {
+                        try { c.stop(); c.close(); } catch (Exception ignored) {}
+                    }
+                    runningClips.clear();
+                }
+            }
+        });
     }
 
     // ---------- ScoreRecord ----------
@@ -698,6 +716,10 @@ public class AdventureGame extends JFrame {
             addLog("Tile points: each tile awards points on landing (1..10). Stars will be converted at end: 1★ = " + STAR_TO_POINT + " pts.");
             addLog("First turn: " + currentPlayer.getName());
             addLog("════════════════════════════════════");
+
+            // START background music loop (if available)
+            playBackgroundLoop("backsoundGame.wav");
+
         } catch (NumberFormatException ex) {
             JOptionPane.showMessageDialog(this, "Please enter a valid number.", "Invalid", JOptionPane.ERROR_MESSAGE);
         }
@@ -711,21 +733,17 @@ public class AdventureGame extends JFrame {
         return sb.toString().trim();
     }
 
-    // Sound helper
+    // Sound helper for short sounds (one-shot)
     private void playSound(String filename) {
         new Thread(() -> {
             AudioInputStream audioIn = null;
             try {
-                // DEBUG: print working dir (optional)
-                // System.err.println("[Sound DEBUG] Working dir: " + System.getProperty("user.dir"));
-
                 InputStream resStream = getClass().getResourceAsStream("/" + filename);
                 if (resStream != null) {
                     audioIn = AudioSystem.getAudioInputStream(new BufferedInputStream(resStream));
                 } else {
                     File soundFile = new File(filename);
                     if (!soundFile.exists()) {
-                        // not fatal; just log
                         addLog("[Sound] File not found: " + filename);
                         return;
                     }
@@ -776,6 +794,94 @@ public class AdventureGame extends JFrame {
                 try { if (audioIn != null) audioIn.close(); } catch (IOException ignored) {}
             }
         }).start();
+    }
+
+    /**
+     * Play background loop using Clip.loop(Clip.LOOP_CONTINUOUSLY).
+     * Will try classpath resource first, then working-directory file.
+     * If already playing, does nothing.
+     */
+    private void playBackgroundLoop(String filename) {
+        if (backgroundClip != null && backgroundClip.isOpen()) {
+            addLog("[Music] Background loop already playing.");
+            return;
+        }
+        new Thread(() -> {
+            AudioInputStream audioIn = null;
+            try {
+                InputStream resStream = getClass().getResourceAsStream("/" + filename);
+                if (resStream != null) {
+                    audioIn = AudioSystem.getAudioInputStream(new BufferedInputStream(resStream));
+                } else {
+                    File soundFile = new File(filename);
+                    if (!soundFile.exists()) {
+                        addLog("[Music] Backsound file not found: " + filename);
+                        return;
+                    }
+                    audioIn = AudioSystem.getAudioInputStream(soundFile);
+                }
+
+                AudioFormat baseFormat = audioIn.getFormat();
+                AudioFormat decodedFormat = new AudioFormat(
+                        AudioFormat.Encoding.PCM_SIGNED,
+                        baseFormat.getSampleRate(),
+                        16,
+                        baseFormat.getChannels(),
+                        baseFormat.getChannels() * 2,
+                        baseFormat.getSampleRate(),
+                        false
+                );
+
+                AudioInputStream din = AudioSystem.getAudioInputStream(decodedFormat, audioIn);
+                DataLine.Info info = new DataLine.Info(Clip.class, decodedFormat);
+                Clip clip = (Clip) AudioSystem.getLine(info);
+                clip.open(din);
+
+                // optional: reduce background volume a bit if control exists
+                try {
+                    FloatControl vol = (FloatControl) clip.getControl(FloatControl.Type.MASTER_GAIN);
+                    float dB = -10.0f; // lower by 10dB
+                    vol.setValue(Math.max(vol.getMinimum(), Math.min(vol.getMaximum(), dB)));
+                } catch (Exception ignore) {}
+
+                backgroundClip = clip;
+                runningClips.add(clip);
+
+                clip.loop(Clip.LOOP_CONTINUOUSLY);
+                clip.start();
+
+                addLog("[Music] Backsound loop started: " + filename);
+            } catch (UnsupportedAudioFileException uex) {
+                System.err.println("[Music] Unsupported audio file: " + filename + " -> " + uex.getMessage());
+                addLog("[Music] Unsupported audio: " + filename);
+            } catch (LineUnavailableException lex) {
+                System.err.println("[Music] Line unavailable for: " + filename + " -> " + lex.getMessage());
+                addLog("[Music] Audio line unavailable: " + filename);
+            } catch (IOException ioex) {
+                System.err.println("[Music] IO error reading: " + filename + " -> " + ioex.getMessage());
+                addLog("[Music] IO error: " + filename);
+            } catch (Exception ex) {
+                System.err.println("[Music] Error playing background sound: " + filename + " -> " + ex.getMessage());
+                addLog("[Music] Error: " + filename);
+            } finally {
+                try { if (audioIn != null) audioIn.close(); } catch (IOException ignored) {}
+            }
+        }).start();
+    }
+
+    /**
+     * Stop background loop (if playing).
+     */
+    private void stopBackgroundLoop() {
+        if (backgroundClip != null) {
+            try {
+                backgroundClip.stop();
+                backgroundClip.close();
+            } catch (Exception ignored) {}
+            runningClips.remove(backgroundClip);
+            backgroundClip = null;
+            addLog("[Music] Backsound stopped.");
+        }
     }
 
     private void rollDiceWithAnimation() {
@@ -854,7 +960,7 @@ public class AdventureGame extends JFrame {
      * animateMovementWithAutoLadder:
      * - Moves player step-by-step.
      * - If usePrimePower == true and moving forward, player can auto-use ladder when passing/landing on ladder-from.
-     * - If usePrimePower == false, ladders are ignored (log message shown).
+     * - Boss encounters are handled ONLY on landing (not during passing).
      */
     private void animateMovementWithAutoLadder(int startPos, int moves, boolean isForward, boolean usePrimePower) {
         final int[] currentStep = {0};
@@ -883,31 +989,6 @@ public class AdventureGame extends JFrame {
                 playSound("move.wav");
 
                 currentPlayer.setPosition(next);
-                // === NEW: boss encounter on passing ===
-                // === NEW: Boss encounter on passing, must win or stop ===
-                if (bossNodes.contains(next)) {
-                    t.stop();
-
-                    int prevPos = currentPos[0]; // previous node before stepping
-                    final Player pRef = currentPlayer;
-
-                    triggerBossEncounter(next, pRef, success -> {
-                        if (!success) {
-                            // FAILED -> return to previous tile and STOP movement
-                            pRef.setPosition(prevPos);
-                            addLog("│ ❌ " + pRef.getName() + " failed to defeat the boss and cannot proceed.");
-                            gameBoard.repaint();
-                            updatePlayersInfoPanel();
-                            isAnimating = false;
-                            rollDiceButton.setEnabled(true);
-                            return;
-                        }
-
-                        // SUCCESS -> continue movement
-                        t.start();
-                    });
-                    return;
-                }
 
                 pathTaken.add(next);
                 gameBoard.setHighlightPath(new ArrayList<>(pathTaken));
@@ -955,7 +1036,6 @@ public class AdventureGame extends JFrame {
 
                 if (remaining[0] == 0) {
                     // landing will be handled at top of loop when remaining <= 0 on next tick, but we also support immediate landing here
-                    // to be consistent, stop and call handler
                     t.stop();
                     handleLandingAfterMove(currentPos[0], extraPending[0]);
                     return;
@@ -976,7 +1056,7 @@ public class AdventureGame extends JFrame {
      * Handles:
      * - awarding star if on multiple of 5,
      * - awarding tile points,
-     * - boss encounter if node is a boss,
+     * - boss encounter if node is a boss (only on landing),
      * - finishing turn / finishing match logic.
      */
     private void handleLandingAfterMove(int landedPos, boolean extraPending) {
@@ -992,7 +1072,7 @@ public class AdventureGame extends JFrame {
         gameBoard.setTeleportEffect(null);
         gameBoard.repaint();
 
-        // Boss encounter check
+        // Boss encounter check - only when landed exactly on boss node
         if (bossNodes.contains(landedPos)) {
             addLog("│ 👾 Boss is present at Node " + landedPos + " — triggering encounter.");
 
@@ -1000,14 +1080,13 @@ public class AdventureGame extends JFrame {
             final boolean _capExtra = extraPending;
             final Player _capPlayer = currentPlayer;
 
-            // Consumer<Boolean>: success = true/false
             triggerBossEncounter(_capLanded, _capPlayer, success -> {
 
                 if (success) {
-                    // WIN → lanjut seperti biasa
+                    // WIN → continue as normal
                     finishTurnAfterLanding(_capLanded, _capExtra);
                 } else {
-                    // FAIL → tidak boleh lanjut
+                    // FAIL → cannot continue; return to previous tile
                     int prev = Math.max(1, _capLanded - 1);
                     _capPlayer.setPosition(prev);
 
@@ -1017,7 +1096,7 @@ public class AdventureGame extends JFrame {
                     gameBoard.repaint();
                     updatePlayersInfoPanel();
 
-                    // lanjut ke pemain berikutnya
+                    // proceed to next non-finished player
                     playerQueue.add(_capPlayer);
                     Player next = pollNextActivePlayer();
                     currentPlayer = next;
@@ -1042,8 +1121,8 @@ public class AdventureGame extends JFrame {
 
     /**
      * Finish-turn flow after landing and any boss encounter completed.
-     * If player reached finish, mark as finished and wait for remaining players.
-     * Otherwise normal rotation.
+     * If player reached finish, mark as finished.
+     * End-match early condition: if only one player remains NOT finished, match ends immediately.
      */
     private void finishTurnAfterLanding(int finalPosition, boolean extraTurn) {
         addLog("│ Final: Node " + finalPosition);
@@ -1055,21 +1134,28 @@ public class AdventureGame extends JFrame {
             // player finished -- mark finished and do not requeue
             currentPlayer.setFinished(true);
             addLog("│ 🎉 " + currentPlayer.getName() + " reached FINISH!");
-            // announce and check if all finished
-            boolean allFinished = true;
-            for (Player p : players) if (!p.isFinished()) { allFinished = false; break; }
 
-            if (allFinished) {
-                addLog("│ All players finished — computing final scores...");
+            // Count how many players are still not finished
+            int notFinished = 0;
+            for (Player p : players) if (!p.isFinished()) notFinished++;
+
+            // If only 0 remain -> all finished (normal)
+            // If only 1 remain -> end match early per requirement
+            if (notFinished <= 1) {
+                addLog("│ Ending match early — only " + notFinished + " player(s) still not finished.");
                 // Determine winner by points + stars*STAR_TO_POINT
                 Player winner = computeWinnerByPointsAndStars();
                 addLog("│ Winner: " + (winner != null ? winner.getName() : "NONE"));
                 // update persistent scores
                 updateScoresAfterMatch(winner);
+
+                // STOP background music before celebratory sound
+                stopBackgroundLoop();
+
                 // show summary and finish
                 playSound("confetti.wav");
                 StringBuilder sb = new StringBuilder();
-                sb.append("All players finished!\n\nFinal summary (points + stars*").append(STAR_TO_POINT).append("):\n");
+                sb.append("Match ended!\n\nFinal summary (points + stars*").append(STAR_TO_POINT).append("):\n");
                 for (Player p : players) {
                     int total = p.getScore() + p.getStars() * STAR_TO_POINT;
                     sb.append(String.format(" • %s — Points: %d • Stars: %d • Total: %d\n", p.getName(), p.getScore(), p.getStars(), total));
@@ -1086,15 +1172,14 @@ public class AdventureGame extends JFrame {
                 addLog("└─────────────────────");
                 return;
             } else {
-                // Not all finished — pick next non-finished player
-                addLog("│ " + currentPlayer.getName() + " finished first — waiting for others to finish.");
+                // Not early-end — proceed as usual (wait other players)
+                addLog("│ " + currentPlayer.getName() + " finished — " + notFinished + " player(s) remaining.");
                 addLog("└─────────────────────");
                 Player next = pollNextActivePlayer();
                 if (next != null) {
                     currentPlayer = next;
                     currentPlayerLabel.setText("Turn: " + currentPlayer.getName());
                 } else {
-                    // no active players left (edge-case)
                     currentPlayer = null;
                     currentPlayerLabel.setText("Waiting...");
                 }
@@ -1194,16 +1279,14 @@ public class AdventureGame extends JFrame {
             for (int i = 0; i < bossWinStars; i++) player.addStar();
 
             updatePlayersInfoPanel();
-            // Inform player, then notify caller with success = true
             JOptionPane.showMessageDialog(this, "You defeated the boss! You earn +" + bossWinPoints + " points and +" + bossWinStars + " stars.", "Victory", JOptionPane.INFORMATION_MESSAGE);
             callback.accept(true);
         } else {
             addLog("│ ❌ " + player.getName() + " failed the boss challenge. " + bossLosePoints + " pts, " + bossLoseStars + " stars");
             player.addScore(bossLosePoints);
-            player.addStar(bossLoseStars); // method clamps negative stars if implemented
+            player.addStar(bossLoseStars);
 
             updatePlayersInfoPanel();
-            // Inform player, then notify caller with success = false
             JOptionPane.showMessageDialog(this, "You lost to the boss. Penalty: " + bossLosePoints + " points, " + bossLoseStars + " star(s).", "Defeat", JOptionPane.WARNING_MESSAGE);
             callback.accept(false);
         }
@@ -1317,7 +1400,7 @@ public class AdventureGame extends JFrame {
         public void addStar(int delta) { stars += delta; if (stars < 0) stars = 0; }
         public void setStars(int s) { stars = Math.max(0, s); }
         public int getScore() { return score; }
-        public void addScore(int delta) { score += delta; /* allow negative intermediate but clamp non-negative final if desired */ if (score < 0) score = 0; }
+        public void addScore(int delta) { score += delta; if (score < 0) score = 0; }
         public void setScore(int s) { score = Math.max(0, s); }
         public BufferedImage getAvatar() { return avatar; }
         public void setAvatar(BufferedImage b) { avatar = b; }
@@ -1556,4 +1639,3 @@ public class AdventureGame extends JFrame {
         });
     }
 }
-F
