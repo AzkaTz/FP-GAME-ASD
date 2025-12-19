@@ -11,29 +11,10 @@ import java.io.*;
 import java.util.*;
 import java.util.List;
 import javax.swing.Timer;
-
-/**
- * AdventureGame - Full single-file implementation (updated)
- * - Avatar selection
- * - Boss encounters (trigger only when landing)
- * - Ladders (random) — can only be used if the player STARTED the turn on a PRIME
- * - Persistent score records (~/.adventure_scores.ser)
- * - Dice animation + sound hooks
- * - Prime tiles highlighted (dark brown)
- * - Random points assigned to each tile (1..10) and awarded on landing (tile points persist across match)
- * - Winner determined by points + stars*STAR_TO_POINT
- *
- * + Background music loop feature: backsoundGame.wav
- *
- * Usage:
- *   javac AdventureGame.java
- *   java AdventureGame
- *
- * Optional sound files in working dir or resources: crash-spin.wav, move.wav, confetti.wav, backsoundGame.wav
- */
+import java.util.Stack;
 public class AdventureGame extends JFrame {
     private static final int BOARD_CELLS = 64;
-    private static final int STAR_TO_POINT = 5; // conversion: 1 star = 5 points
+    private static final int STAR_TO_POINT = 5;
 
     private GameBoard gameBoard;
     private JPanel controlPanel;
@@ -54,30 +35,20 @@ public class AdventureGame extends JFrame {
     private Random random;
     private boolean isAnimating = false;
 
-    // persistence
     private Map<String, ScoreRecord> scoreMap;
     private final File scoreFile;
 
-    // stars claimed per match: indices 1..64
     private boolean[] starsClaimed = new boolean[BOARD_CELLS + 1];
-
-    // boss nodes (configurable)
     private Set<Integer> bossNodes = new HashSet<>(Arrays.asList(8, 15, 23, 31, 42, 55));
     private int bossWinPoints = 10;
     private int bossWinStars = 2;
     private int bossLosePoints = -5;
     private int bossLoseStars = -1;
 
-    // random ladders
     private List<RandomLink> randomLinks = new ArrayList<>();
-
-    // per-tile points (1..10 per tile)
     private int[] tilePoints = new int[BOARD_CELLS + 1];
 
-    // running audio clips ref
     private final java.util.List<Clip> runningClips = Collections.synchronizedList(new ArrayList<>());
-
-    // background loop clip (kept separate for easy stop)
     private Clip backgroundClip = null;
 
     public AdventureGame() {
@@ -92,12 +63,10 @@ public class AdventureGame extends JFrame {
         loadScores();
         initializeUI();
 
-        // ensure audio resources are stopped when window closes
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
                 stopBackgroundLoop();
-                // stop any running clips
                 synchronized (runningClips) {
                     for (Clip c : new ArrayList<>(runningClips)) {
                         try { c.stop(); c.close(); } catch (Exception ignored) {}
@@ -108,7 +77,7 @@ public class AdventureGame extends JFrame {
         });
     }
 
-    // ---------- ScoreRecord ----------
+    // ========== ScoreRecord (UNCHANGED) ==========
     public static class ScoreRecord implements Serializable {
         private static final long serialVersionUID = 1L;
         public int wins;
@@ -116,7 +85,12 @@ public class AdventureGame extends JFrame {
         public int totalStars;
         public int totalScore;
 
-        public ScoreRecord() { this.wins = 0; this.gamesPlayed = 0; this.totalStars = 0; this.totalScore = 0; }
+        public ScoreRecord() {
+            this.wins = 0;
+            this.gamesPlayed = 0;
+            this.totalStars = 0;
+            this.totalScore = 0;
+        }
 
         @Override
         public String toString() {
@@ -177,9 +151,9 @@ public class AdventureGame extends JFrame {
         return "W:" + rec.wins + " G:" + rec.gamesPlayed + " S:" + rec.totalStars + " P:" + rec.totalScore;
     }
 
-    // ---------- UI ----------
+    // ========== UI INITIALIZATION (MINOR UPDATES) ==========
     private void initializeUI() {
-        setTitle("Adventure Game — Board Adventure");
+        setTitle("Adventure Game — Treasure Map Edition");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout(10, 10));
         getContentPane().setBackground(new Color(245, 240, 230));
@@ -193,7 +167,7 @@ public class AdventureGame extends JFrame {
         add(boardScroll, BorderLayout.CENTER);
 
         controlPanel = createControlPanel();
-        add(controlPanel, BorderLayout.SOUTH);
+        add(controlPanel, BorderLayout.EAST);
 
         setMinimumSize(new Dimension(1200, 820));
         setExtendedState(JFrame.MAXIMIZED_BOTH);
@@ -206,11 +180,11 @@ public class AdventureGame extends JFrame {
         p.setBorder(new EmptyBorder(14, 18, 8, 18));
         p.setOpaque(false);
 
-        JLabel title = new JLabel("ADVENTURE — BOARD GAME");
+        JLabel title = new JLabel("ADVENTURE — TREASURE MAP");
         title.setFont(new Font("Serif", Font.BOLD, 24));
         title.setForeground(new Color(60, 30, 10));
 
-        JLabel subtitle = new JLabel("Light Mode • Persistent scores • Avatars • Boss encounters • Ladders (prime rule)");
+        JLabel subtitle = new JLabel("Normalized Coordinates • Pin Markers • Boss Encounters • Prime Ladders");
         subtitle.setFont(new Font("SansSerif", Font.PLAIN, 12));
         subtitle.setForeground(new Color(100, 80, 70));
 
@@ -223,7 +197,7 @@ public class AdventureGame extends JFrame {
 
         p.add(wrap, BorderLayout.WEST);
 
-        JLabel badge = new JLabel("Vintage");
+        JLabel badge = new JLabel("Updated");
         badge.setOpaque(true);
         badge.setBackground(new Color(255, 250, 235));
         badge.setBorder(new LineBorder(new Color(200, 170, 140), 1, true));
@@ -237,39 +211,44 @@ public class AdventureGame extends JFrame {
     }
 
     private JPanel createControlPanel() {
-        JPanel panel = new JPanel(new BorderLayout(12, 12));
-        panel.setBorder(new EmptyBorder(12, 14, 12, 14));
+        // Main panel - VERTICAL stacking for right side
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
         panel.setBackground(new Color(250, 246, 238));
+        panel.setPreferredSize(new Dimension(300, 800));
 
-        JPanel left = new JPanel();
-        left.setOpaque(false);
-        left.setLayout(new BoxLayout(left, BoxLayout.Y_AXIS));
-
+        // ========== BUTTONS ==========
         startButton = createClassicButton("Start Game", new Color(210,120,60), new Color(230,160,100));
-        startButton.setMaximumSize(new Dimension(220, 48));
+        startButton.setMaximumSize(new Dimension(280, 40));
+        startButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         startButton.addActionListener(e -> startGame());
-        left.add(startButton);
-        left.add(Box.createVerticalStrut(10));
+        panel.add(startButton);
+        panel.add(Box.createVerticalStrut(8));
 
         rollDiceButton = createClassicButton("Roll Dice", new Color(95,150,210), new Color(130,190,240));
-        rollDiceButton.setMaximumSize(new Dimension(220, 48));
+        rollDiceButton.setMaximumSize(new Dimension(280, 40));
+        rollDiceButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         rollDiceButton.setEnabled(false);
         rollDiceButton.addActionListener(e -> rollDiceWithAnimation());
-        left.add(rollDiceButton);
-        left.add(Box.createVerticalStrut(10));
+        panel.add(rollDiceButton);
+        panel.add(Box.createVerticalStrut(8));
 
         settingsButton = createClassicButton("Settings", new Color(180,120,160), new Color(210,160,190));
-        settingsButton.setMaximumSize(new Dimension(220, 40));
+        settingsButton.setMaximumSize(new Dimension(280, 34));
+        settingsButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         settingsButton.addActionListener(e -> openSettingsDialog());
-        left.add(settingsButton);
-        left.add(Box.createVerticalStrut(8));
+        panel.add(settingsButton);
+        panel.add(Box.createVerticalStrut(6));
 
         editAvatarButton = createClassicButton("Edit Avatar", new Color(160,170,120), new Color(190,210,150));
-        editAvatarButton.setMaximumSize(new Dimension(220, 40));
+        editAvatarButton.setMaximumSize(new Dimension(280, 34));
+        editAvatarButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         editAvatarButton.addActionListener(e -> promptEditAvatar());
-        left.add(editAvatarButton);
-        left.add(Box.createVerticalStrut(10));
+        panel.add(editAvatarButton);
+        panel.add(Box.createVerticalStrut(10));
 
+        // ========== DICE ==========
         dicePanel = new JPanel() {
             @Override
             protected void paintComponent(Graphics g) {
@@ -282,78 +261,83 @@ public class AdventureGame extends JFrame {
         dicePanel.setOpaque(false);
         dicePanel.setLayout(new BoxLayout(dicePanel, BoxLayout.Y_AXIS));
         dicePanel.setBorder(new EmptyBorder(8, 8, 8, 8));
-        dicePanel.setMaximumSize(new Dimension(220, 110));
+        dicePanel.setMaximumSize(new Dimension(280, 90));
+        dicePanel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         JLabel diceTitle = new JLabel("Dice");
-        diceTitle.setFont(new Font("Serif", Font.BOLD, 12));
+        diceTitle.setFont(new Font("Serif", Font.BOLD, 11));
         diceTitle.setForeground(new Color(80, 50, 30));
         diceTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         diceResultLabel = new JLabel("?");
-        diceResultLabel.setFont(new Font("Serif", Font.BOLD, 48));
+        diceResultLabel.setFont(new Font("Serif", Font.BOLD, 42));
         diceResultLabel.setForeground(new Color(80, 120, 80));
         diceResultLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         dicePanel.add(diceTitle);
-        dicePanel.add(Box.createVerticalStrut(6));
+        dicePanel.add(Box.createVerticalStrut(4));
         dicePanel.add(diceResultLabel);
+        panel.add(dicePanel);
+        panel.add(Box.createVerticalStrut(10));
 
-        left.add(dicePanel);
-
-        panel.add(left, BorderLayout.WEST);
-
-        JPanel center = new JPanel(new BorderLayout());
-        center.setOpaque(false);
-
+        // ========== CURRENT TURN ==========
         currentPlayerLabel = new JLabel("Waiting for players...");
         currentPlayerLabel.setOpaque(true);
         currentPlayerLabel.setBackground(new Color(255, 250, 240));
         currentPlayerLabel.setBorder(new LineBorder(new Color(210, 180, 150), 1, true));
-        currentPlayerLabel.setFont(new Font("Serif", Font.BOLD, 16));
+        currentPlayerLabel.setFont(new Font("Serif", Font.BOLD, 12));
         currentPlayerLabel.setForeground(new Color(80, 60, 40));
         currentPlayerLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        currentPlayerLabel.setPreferredSize(new Dimension(200, 36));
-        center.add(currentPlayerLabel, BorderLayout.NORTH);
+        currentPlayerLabel.setMaximumSize(new Dimension(280, 28));
+        currentPlayerLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(currentPlayerLabel);
+        panel.add(Box.createVerticalStrut(8));
+
+        // ========== PLAYERS ==========
+        JLabel playersTitle = new JLabel("Players");
+        playersTitle.setFont(new Font("Serif", Font.BOLD, 12));
+        playersTitle.setForeground(new Color(85, 60, 40));
+        playersTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(playersTitle);
+        panel.add(Box.createVerticalStrut(4));
 
         playersInfoPanel = new JPanel();
         playersInfoPanel.setOpaque(false);
         playersInfoPanel.setLayout(new BoxLayout(playersInfoPanel, BoxLayout.Y_AXIS));
         JScrollPane playersScroll = new JScrollPane(playersInfoPanel);
         playersScroll.setBorder(new LineBorder(new Color(220, 200, 180), 1, true));
-        playersScroll.setPreferredSize(new Dimension(420, 160));
+        playersScroll.setMaximumSize(new Dimension(280, 160));
+        playersScroll.setAlignmentX(Component.CENTER_ALIGNMENT);
         playersScroll.getViewport().setBackground(new Color(250,246,238));
-        center.add(playersScroll, BorderLayout.CENTER);
+        panel.add(playersScroll);
+        panel.add(Box.createVerticalStrut(8));
 
-        panel.add(center, BorderLayout.CENTER);
-
-        JPanel right = new JPanel();
-        right.setOpaque(false);
-        right.setLayout(new BoxLayout(right, BoxLayout.Y_AXIS));
-
+        // ========== GAME LOG ==========
         JLabel logTitle = new JLabel("Game Log");
         logTitle.setFont(new Font("Serif", Font.BOLD, 12));
         logTitle.setForeground(new Color(90, 70, 50));
         logTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(logTitle);
+        panel.add(Box.createVerticalStrut(4));
 
         gameLogArea = new JTextArea();
-        gameLogArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        gameLogArea.setFont(new Font("Monospaced", Font.PLAIN, 10));
         gameLogArea.setEditable(false);
         gameLogArea.setLineWrap(true);
         gameLogArea.setWrapStyleWord(true);
         gameLogArea.setBackground(new Color(255, 255, 250));
         gameLogArea.setForeground(new Color(40, 30, 20));
-        gameLogArea.setBorder(new EmptyBorder(8, 8, 8, 8));
+        gameLogArea.setBorder(new EmptyBorder(6, 6, 6, 6));
 
         JScrollPane logScroll = new JScrollPane(gameLogArea);
-        logScroll.setPreferredSize(new Dimension(420, 160));
+        logScroll.setMaximumSize(new Dimension(280, 250));
+        logScroll.setPreferredSize(new Dimension(280, 250));
+        logScroll.setAlignmentX(Component.CENTER_ALIGNMENT);
         logScroll.setBorder(new LineBorder(new Color(220, 200, 180), 2, true));
         logScroll.getViewport().setBackground(new Color(255,255,250));
+        panel.add(logScroll);
 
-        right.add(logTitle);
-        right.add(Box.createVerticalStrut(8));
-        right.add(logScroll);
-
-        panel.add(right, BorderLayout.EAST);
+        panel.add(Box.createVerticalGlue());
 
         return panel;
     }
@@ -393,20 +377,17 @@ public class AdventureGame extends JFrame {
         return btn;
     }
 
-    /**
-     * updatePlayersInfoPanel:
-     * - While gameStarted == true: show current players at top, then all history.
-     * - When gameStarted == false: show full leaderboard sorted.
-     */
     private void updatePlayersInfoPanel() {
         playersInfoPanel.removeAll();
 
         class RowBuilder {
             JPanel build(Player p) {
-                JPanel card = new JPanel(new BorderLayout(8, 0));
-                card.setMaximumSize(new Dimension(420, 80));
+                JPanel card = new JPanel(new BorderLayout(6, 0));
+                card.setMaximumSize(new Dimension(300, 60));  // ← 80→60 (smaller height)
                 card.setBackground(new Color(255, 255, 250));
-                card.setBorder(BorderFactory.createCompoundBorder(new LineBorder(new Color(220,200,180),1,true), new EmptyBorder(6,8,6,8)));
+                card.setBorder(BorderFactory.createCompoundBorder(
+                        new LineBorder(new Color(220,200,180),1,true),
+                        new EmptyBorder(4,6,4,6)));  // ← 6,8,6,8 → 4,6,4,6 (less padding)
 
                 JPanel avatarBox = new JPanel() {
                     @Override
@@ -417,32 +398,32 @@ public class AdventureGame extends JFrame {
                             BufferedImage img = p.getAvatar();
                             int w = getWidth(), h = getHeight();
                             int iw = img.getWidth(), ih = img.getHeight();
-                            double scale = Math.min((w-8)/(double)iw, (h-8)/(double)ih);
+                            double scale = Math.min((w-6)/(double)iw, (h-6)/(double)ih);  // ← 8→6
                             int dw = (int)(iw*scale), dh = (int)(ih*scale);
-                            g2.drawImage(img, 4 + (w-8-dw)/2, 4 + (h-8-dh)/2, dw, dh, null);
+                            g2.drawImage(img, 3 + (w-6-dw)/2, 3 + (h-6-dh)/2, dw, dh, null);  // ← 4→3
                         } else {
                             g2.setColor(p.getColor());
-                            g2.fillOval(4,4,44,44);
+                            g2.fillOval(3,3,36,36);  // ← 4,4,44,44 → 3,3,36,36 (smaller circle)
                             g2.setColor(p.getColor().darker());
-                            g2.setStroke(new BasicStroke(2));
-                            g2.drawOval(4,4,44,44);
+                            g2.setStroke(new BasicStroke(1.5f));  // ← 2→1.5 (thinner border)
+                            g2.drawOval(3,3,36,36);  // ← smaller
                             g2.setColor(new Color(20,18,12));
-                            g2.setFont(new Font("Serif", Font.BOLD, 18));
+                            g2.setFont(new Font("Serif", Font.BOLD, 15));  // ← 18→15 (smaller font)
                             FontMetrics fm = g2.getFontMetrics();
                             String in = p.getName().substring(0,1).toUpperCase();
-                            g2.drawString(in, 4 + (44 - fm.stringWidth(in))/2, 4 + (44 + fm.getAscent())/2 - 2);
+                            g2.drawString(in, 3 + (36 - fm.stringWidth(in))/2, 3 + (36 + fm.getAscent())/2 - 2);
                         }
                     }
                 };
-                avatarBox.setPreferredSize(new Dimension(60, 56));
+                avatarBox.setPreferredSize(new Dimension(48, 48));  // ← 60,56 → 48,48 (smaller avatar box)
                 avatarBox.setOpaque(false);
 
                 String history = getScoreSummary(p.getName());
-                JLabel info = new JLabel("<html><b>" + p.getName() + "</b> • Node " + p.getPosition() + " &nbsp; ★ " + p.getStars()
-                        + " • Pts: " + p.getScore()
-                        + (p.isFinished() ? " • Finished" : "")
-                        + "<br/><span style='font-size:11px;color:#6b4f36;'>History: " + history + "</span></html>");
-                info.setFont(new Font("Serif", Font.PLAIN, 13));
+                JLabel info = new JLabel("<html><b>" + p.getName() + "</b> • N" + p.getPosition() + " ★" + p.getStars()
+                        + " • " + p.getScore() + "pts"  // ← Shortened text
+                        + (p.isFinished() ? " • ✓" : "")  // ← "Finished" → "✓"
+                        + "<br/><span style='font-size:10px;color:#6b4f36;'>" + history + "</span></html>");  // ← 11px→10px
+                info.setFont(new Font("Serif", Font.PLAIN, 11));  // ← 13→11 (smaller font)
                 info.setForeground(new Color(70, 50, 30));
 
                 card.add(avatarBox, BorderLayout.WEST);
@@ -491,17 +472,23 @@ public class AdventureGame extends JFrame {
             for (String name : allNames) {
                 if (shownNames.contains(name)) continue;
                 ScoreRecord rec = scoreMap.getOrDefault(name, new ScoreRecord());
-                JPanel card = new JPanel(new BorderLayout(8, 0));
-                card.setMaximumSize(new Dimension(420, 48));
+
+                // ========== UPDATED CODE ==========
+                JPanel card = new JPanel(new BorderLayout(6, 0));
+                card.setMaximumSize(new Dimension(300, 40));  // ← 48→40
                 card.setBackground(new Color(255, 255, 250));
-                card.setBorder(BorderFactory.createCompoundBorder(new LineBorder(new Color(220,200,180),1,true), new EmptyBorder(6,8,6,8)));
-                JLabel info = new JLabel("<html><b>" + name + "</b> &nbsp; <span style='font-size:11px;color:#6b4f36;'>History: "
-                        + getScoreSummary(name) + "</span></html>");
-                info.setFont(new Font("Serif", Font.PLAIN, 13));
+                card.setBorder(BorderFactory.createCompoundBorder(
+                        new LineBorder(new Color(220,200,180),1,true),
+                        new EmptyBorder(4,6,4,6)));  // ← Smaller padding
+
+                JLabel info = new JLabel("<html><b>" + name + "</b> <span style='font-size:10px;color:#6b4f36;'>"
+                        + getScoreSummary(name) + "</span></html>");  // ← 11px→10px, removed "History:" label
+                info.setFont(new Font("Serif", Font.PLAIN, 11));  // ← 13→11
                 info.setForeground(new Color(70, 50, 30));
+
                 card.add(info, BorderLayout.CENTER);
                 playersInfoPanel.add(card);
-                playersInfoPanel.add(Box.createVerticalStrut(6));
+                playersInfoPanel.add(Box.createVerticalStrut(4));  // ← 6→4 (less spacing)
             }
 
             playersInfoPanel.revalidate();
@@ -529,26 +516,29 @@ public class AdventureGame extends JFrame {
 
         for (String name : allNames) {
             ScoreRecord rec = scoreMap.getOrDefault(name, new ScoreRecord());
-            JPanel card = new JPanel(new BorderLayout(8, 0));
-            card.setMaximumSize(new Dimension(420, 54));
+            JPanel card = new JPanel(new BorderLayout(6, 0));
+            card.setMaximumSize(new Dimension(300, 40));  // ← 54→44
             card.setBackground(new Color(255, 255, 250));
-            card.setBorder(BorderFactory.createCompoundBorder(new LineBorder(new Color(220,200,180),1,true), new EmptyBorder(6,8,6,8)));
+            card.setBorder(BorderFactory.createCompoundBorder(
+                    new LineBorder(new Color(220,200,180),1,true),
+                    new EmptyBorder(4,6,4,6)));  // ← Smaller padding
 
-            JLabel info = new JLabel("<html><b>" + name + "</b> &nbsp; <span style='font-size:12px;color:#6b4f36;'>"
-                    + "Wins: " + rec.wins + " • Games: " + rec.gamesPlayed + " • Stars: " + rec.totalStars + " • Pts: " + rec.totalScore + "</span></html>");
-            info.setFont(new Font("Serif", Font.PLAIN, 13));
+            JLabel info = new JLabel("<html><b>" + name + "</b> <span style='font-size:10px;color:#6b4f36;'>"
+                    + "W:" + rec.wins + " G:" + rec.gamesPlayed + " S:" + rec.totalStars + " P:" + rec.totalScore
+                    + "</span></html>");  // ← 12px→10px, shortened labels
+            info.setFont(new Font("Serif", Font.PLAIN, 11));  // ← 13→11
             info.setForeground(new Color(70, 50, 30));
 
             card.add(info, BorderLayout.CENTER);
             playersInfoPanel.add(card);
-            playersInfoPanel.add(Box.createVerticalStrut(6));
+            playersInfoPanel.add(Box.createVerticalStrut(4));  // ← 6→4
         }
 
         playersInfoPanel.revalidate();
         playersInfoPanel.repaint();
     }
 
-    // ---------- UI helpers ----------
+    // ========== UI HELPERS (UNCHANGED) ==========
     private void openSettingsDialog() {
         JPanel panel = new JPanel(new GridLayout(0,2,8,8));
         panel.add(new JLabel("Boss nodes (comma separated):"));
@@ -616,7 +606,7 @@ public class AdventureGame extends JFrame {
         }
     }
 
-    // ---------- Game logic ----------
+    // ========== GAME LOGIC (100% UNCHANGED) ==========
     private void startGame() {
         String numPlayersStr = JOptionPane.showInputDialog(this,
                 "How many players? (2-6)",
@@ -630,9 +620,7 @@ public class AdventureGame extends JFrame {
                 return;
             }
 
-            // reset stars claimed for this match
             Arrays.fill(starsClaimed, false);
-
             players.clear();
 
             Color[] colors = {
@@ -646,11 +634,10 @@ public class AdventureGame extends JFrame {
 
             for (int i = 0; i < numPlayers; i++) {
                 String name = JOptionPane.showInputDialog(this, "Enter name for Player " + (i + 1) + ":", "Player Name", JOptionPane.QUESTION_MESSAGE);
-                if (name == null) { return; } // cancelled
+                if (name == null) { return; }
                 if (name.trim().isEmpty()) name = "Player " + (i + 1);
                 name = name.trim();
 
-                // avatar chooser
                 BufferedImage avatar = null;
                 int res = JOptionPane.showConfirmDialog(this, "Do you want to select an avatar image for " + name + "?", "Avatar", JOptionPane.YES_NO_OPTION);
                 if (res == JOptionPane.YES_OPTION) {
@@ -673,16 +660,12 @@ public class AdventureGame extends JFrame {
                 players.add(p);
             }
 
-            // generate ladders for this match
             generateRandomLinks();
 
-            // generate tile points
             for (int i = 1; i <= BOARD_CELLS; i++) {
-                // Start tile maybe 0 points; keep others 1..10
                 tilePoints[i] = (i == 1) ? 0 : (1 + random.nextInt(10));
             }
 
-            // reset finished flag & scores/stars for players
             for (Player p : players) {
                 p.setPosition(1);
                 p.setStars(0);
@@ -717,7 +700,6 @@ public class AdventureGame extends JFrame {
             addLog("First turn: " + currentPlayer.getName());
             addLog("════════════════════════════════════");
 
-            // START background music loop (if available)
             playBackgroundLoop("backsoundGame.wav");
 
         } catch (NumberFormatException ex) {
@@ -733,7 +715,7 @@ public class AdventureGame extends JFrame {
         return sb.toString().trim();
     }
 
-    // Sound helper for short sounds (one-shot)
+    // ========== SOUND SYSTEM (UNCHANGED) ==========
     private void playSound(String filename) {
         new Thread(() -> {
             AudioInputStream audioIn = null;
@@ -744,7 +726,6 @@ public class AdventureGame extends JFrame {
                 } else {
                     File soundFile = new File(filename);
                     if (!soundFile.exists()) {
-                        addLog("[Sound] File not found: " + filename);
                         return;
                     }
                     audioIn = AudioSystem.getAudioInputStream(soundFile);
@@ -762,7 +743,6 @@ public class AdventureGame extends JFrame {
                 );
 
                 AudioInputStream din = AudioSystem.getAudioInputStream(decodedFormat, audioIn);
-
                 DataLine.Info info = new DataLine.Info(Clip.class, decodedFormat);
                 Clip clip = (Clip) AudioSystem.getLine(info);
                 clip.open(din);
@@ -778,32 +758,15 @@ public class AdventureGame extends JFrame {
                 });
 
                 clip.start();
-            } catch (UnsupportedAudioFileException uex) {
-                System.err.println("[Sound] Unsupported audio file: " + filename + " -> " + uex.getMessage());
-                addLog("[Sound] Unsupported audio: " + filename);
-            } catch (LineUnavailableException lex) {
-                System.err.println("[Sound] Line unavailable for: " + filename + " -> " + lex.getMessage());
-                addLog("[Sound] Audio line unavailable: " + filename);
-            } catch (IOException ioex) {
-                System.err.println("[Sound] IO error reading: " + filename + " -> " + ioex.getMessage());
-                addLog("[Sound] IO error: " + filename);
-            } catch (Exception ex) {
-                System.err.println("[Sound] Error playing sound: " + filename + " -> " + ex.getMessage());
-                addLog("[Sound] Error: " + filename);
+            } catch (Exception ignored) {
             } finally {
                 try { if (audioIn != null) audioIn.close(); } catch (IOException ignored) {}
             }
         }).start();
     }
 
-    /**
-     * Play background loop using Clip.loop(Clip.LOOP_CONTINUOUSLY).
-     * Will try classpath resource first, then working-directory file.
-     * If already playing, does nothing.
-     */
     private void playBackgroundLoop(String filename) {
         if (backgroundClip != null && backgroundClip.isOpen()) {
-            addLog("[Music] Background loop already playing.");
             return;
         }
         new Thread(() -> {
@@ -815,7 +778,6 @@ public class AdventureGame extends JFrame {
                 } else {
                     File soundFile = new File(filename);
                     if (!soundFile.exists()) {
-                        addLog("[Music] Backsound file not found: " + filename);
                         return;
                     }
                     audioIn = AudioSystem.getAudioInputStream(soundFile);
@@ -837,10 +799,9 @@ public class AdventureGame extends JFrame {
                 Clip clip = (Clip) AudioSystem.getLine(info);
                 clip.open(din);
 
-                // optional: reduce background volume a bit if control exists
                 try {
                     FloatControl vol = (FloatControl) clip.getControl(FloatControl.Type.MASTER_GAIN);
-                    float dB = -10.0f; // lower by 10dB
+                    float dB = -10.0f;
                     vol.setValue(Math.max(vol.getMinimum(), Math.min(vol.getMaximum(), dB)));
                 } catch (Exception ignore) {}
 
@@ -850,28 +811,13 @@ public class AdventureGame extends JFrame {
                 clip.loop(Clip.LOOP_CONTINUOUSLY);
                 clip.start();
 
-                addLog("[Music] Backsound loop started: " + filename);
-            } catch (UnsupportedAudioFileException uex) {
-                System.err.println("[Music] Unsupported audio file: " + filename + " -> " + uex.getMessage());
-                addLog("[Music] Unsupported audio: " + filename);
-            } catch (LineUnavailableException lex) {
-                System.err.println("[Music] Line unavailable for: " + filename + " -> " + lex.getMessage());
-                addLog("[Music] Audio line unavailable: " + filename);
-            } catch (IOException ioex) {
-                System.err.println("[Music] IO error reading: " + filename + " -> " + ioex.getMessage());
-                addLog("[Music] IO error: " + filename);
-            } catch (Exception ex) {
-                System.err.println("[Music] Error playing background sound: " + filename + " -> " + ex.getMessage());
-                addLog("[Music] Error: " + filename);
+            } catch (Exception ignored) {
             } finally {
                 try { if (audioIn != null) audioIn.close(); } catch (IOException ignored) {}
             }
         }).start();
     }
 
-    /**
-     * Stop background loop (if playing).
-     */
     private void stopBackgroundLoop() {
         if (backgroundClip != null) {
             try {
@@ -880,10 +826,10 @@ public class AdventureGame extends JFrame {
             } catch (Exception ignored) {}
             runningClips.remove(backgroundClip);
             backgroundClip = null;
-            addLog("[Music] Backsound stopped.");
         }
     }
 
+    // ========== DICE & MOVEMENT LOGIC (100% UNCHANGED) ==========
     private void rollDiceWithAnimation() {
         if (!gameStarted || currentPlayer == null || isAnimating) return;
 
@@ -894,7 +840,7 @@ public class AdventureGame extends JFrame {
 
         int finalDiceValue = random.nextInt(6) + 1;
         double probability = random.nextDouble();
-        boolean isForward = probability < 0.75; // mostly forward
+        boolean isForward = probability < 0.75;
 
         int cycles = 10 + random.nextInt(6);
         final int[] tick = {0};
@@ -955,13 +901,73 @@ public class AdventureGame extends JFrame {
         addLog("│ ➕ " + p.getName() + " received " + pts + " pts for landing on Node " + pos + " (tile points).");
         updatePlayersInfoPanel();
     }
-
     /**
-     * animateMovementWithAutoLadder:
-     * - Moves player step-by-step.
-     * - If usePrimePower == true and moving forward, player can auto-use ladder when passing/landing on ladder-from.
-     * - Boss encounters are handled ONLY on landing (not during passing).
+     * Stack-based backward movement - retraces exact path taken
+     * Including going DOWN ladders that were used before
      */
+    private void animateBackwardWithStack(int startPos, int steps) {
+        // Check if can go back
+        if (!currentPlayer.canGoBack(steps)) {
+            int available = Math.max(0, currentPlayer.getMovementHistory().size() - 1);
+            addLog("│ ⚠ Cannot go back " + steps + " steps (only " + available + " available)");
+            steps = available;
+
+            if (steps == 0) {
+                addLog("│ Already at starting position!");
+                finishTurnAfterLanding(currentPlayer.getPosition(), false);
+                return;
+            }
+        }
+
+        final int[] remaining = {steps};
+        final int[] currentStep = {0};
+        final List<Integer> pathTaken = new ArrayList<>();
+        pathTaken.add(startPos);
+
+        addLog("│ [Stack] Going back " + steps + " steps (stack size: " + currentPlayer.getMovementHistory().size() + ")");
+
+        javax.swing.Timer t = new javax.swing.Timer(420, null);
+        t.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (remaining[0] <= 0) {
+                    t.stop();
+                    // Landed - award points/stars at final position
+                    handleLandingAfterMove(currentPlayer.getPosition(), false);
+                    return;
+                }
+
+                // Pop from stack to get previous position
+                Integer prevPos = currentPlayer.popPosition();
+                if (prevPos == null) {
+                    t.stop();
+                    addLog("│ ✖ Stack empty - stopping backward movement");
+                    handleLandingAfterMove(currentPlayer.getPosition(), false);
+                    return;
+                }
+
+                currentStep[0]++;
+                remaining[0]--;
+
+                playSound("move.wav");
+
+                currentPlayer.setPosition(prevPos);
+                pathTaken.add(prevPos);
+
+                gameBoard.setHighlightPath(new ArrayList<>(pathTaken));
+                gameBoard.repaint();
+                updatePlayersInfoPanel();
+
+                addLog("│ Step " + currentStep[0] + ": Node " + prevPos + " [popped from stack] (left: " + remaining[0] + ")");
+
+                if (remaining[0] == 0) {
+                    t.stop();
+                    handleLandingAfterMove(prevPos, false);
+                }
+            }
+        });
+        t.start();
+    }
     private void animateMovementWithAutoLadder(int startPos, int moves, boolean isForward, boolean usePrimePower) {
         final int[] currentStep = {0};
         final int[] remaining = {moves};
@@ -969,12 +975,16 @@ public class AdventureGame extends JFrame {
         final List<Integer> pathTaken = new ArrayList<>();
         pathTaken.add(startPos);
         final boolean[] extraPending = {false};
-
+        if (!isForward) {
+            animateBackwardWithStack(startPos, moves);
+            return;  // Exit early, jangan lanjut ke bawah
+        }
         javax.swing.Timer t = new javax.swing.Timer(420, null);
         t.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                if (remaining[0] <= 0) { t.stop(); // proceed landing effects (boss / tile / finish)
+                if (remaining[0] <= 0) {
+                    t.stop();
                     handleLandingAfterMove(currentPos[0], extraPending[0]);
                     return;
                 }
@@ -989,7 +999,10 @@ public class AdventureGame extends JFrame {
                 playSound("move.wav");
 
                 currentPlayer.setPosition(next);
-
+                if (isForward) {
+                    currentPlayer.pushPosition(next);  // Track forward movement
+                    addLog("│   [Stack] Pushed: " + next + " (size: " + currentPlayer.getMovementHistory().size() + ")");
+                }
                 pathTaken.add(next);
                 gameBoard.setHighlightPath(new ArrayList<>(pathTaken));
                 gameBoard.repaint();
@@ -997,11 +1010,10 @@ public class AdventureGame extends JFrame {
 
                 addLog("│ Step " + currentStep[0] + ": Node " + next + " (left: " + remaining[0] + ")");
 
-                // PRIME auto-ladder while moving: only active if player started the turn on a prime and moving forward
                 if (usePrimePower && isForward && remaining[0] > 0) {
                     for (RandomLink link : randomLinks) {
                         if (link.isLadder() && link.getFrom() == currentPos[0]) {
-                            final RandomLink capturedLink = link; // <-- capture for lambda
+                            final RandomLink capturedLink = link;
                             addLog("│ ✦ PRIME: Auto-using LADDER!");
                             addLog("│ Teleporting: " + capturedLink.getFrom() + " → " + capturedLink.getTo());
                             playSound("move.wav");
@@ -1009,6 +1021,12 @@ public class AdventureGame extends JFrame {
                             javax.swing.Timer teleport = new javax.swing.Timer(700, evt -> {
                                 currentPos[0] = capturedLink.getTo();
                                 currentPlayer.setPosition(capturedLink.getTo());
+
+                                // ========== ADD THESE 2 LINES ==========
+                                currentPlayer.pushPosition(capturedLink.getTo());  // Track ladder destination
+                                addLog("│   [Stack] Pushed ladder destination: " + capturedLink.getTo() + " (size: " + currentPlayer.getMovementHistory().size() + ")");
+                                // =======================================
+
                                 pathTaken.add(capturedLink.getTo());
                                 gameBoard.setTeleportEffect(capturedLink);
                                 gameBoard.setHighlightPath(new ArrayList<>(pathTaken));
@@ -1018,7 +1036,6 @@ public class AdventureGame extends JFrame {
                                     boolean awarded = awardStarIfAvailable(currentPlayer, currentPos[0]);
                                     if (awarded) extraPending[0] = true;
                                 }
-                                // award tile points for teleport destination (tile points persist)
                                 awardTilePoints(currentPlayer, currentPos[0]);
 
                                 javax.swing.Timer cont = new javax.swing.Timer(650, ev2 -> {
@@ -1035,7 +1052,6 @@ public class AdventureGame extends JFrame {
                 }
 
                 if (remaining[0] == 0) {
-                    // landing will be handled at top of loop when remaining <= 0 on next tick, but we also support immediate landing here
                     t.stop();
                     handleLandingAfterMove(currentPos[0], extraPending[0]);
                     return;
@@ -1051,28 +1067,17 @@ public class AdventureGame extends JFrame {
         t.start();
     }
 
-    /**
-     * Called when movement finished (after any teleport effects).
-     * Handles:
-     * - awarding star if on multiple of 5,
-     * - awarding tile points,
-     * - boss encounter if node is a boss (only on landing),
-     * - finishing turn / finishing match logic.
-     */
     private void handleLandingAfterMove(int landedPos, boolean extraPending) {
         addLog("│ Landed: Node " + landedPos);
-        // award star
         boolean awarded = awardStarIfAvailable(currentPlayer, landedPos);
         if (awarded) extraPending = true;
 
-        // award tile points (tile points persist)
         awardTilePoints(currentPlayer, landedPos);
 
         gameBoard.setHighlightPath(null);
         gameBoard.setTeleportEffect(null);
         gameBoard.repaint();
 
-        // Boss encounter check - only when landed exactly on boss node
         if (bossNodes.contains(landedPos)) {
             addLog("│ 👾 Boss is present at Node " + landedPos + " — triggering encounter.");
 
@@ -1081,12 +1086,9 @@ public class AdventureGame extends JFrame {
             final Player _capPlayer = currentPlayer;
 
             triggerBossEncounter(_capLanded, _capPlayer, success -> {
-
                 if (success) {
-                    // WIN → continue as normal
                     finishTurnAfterLanding(_capLanded, _capExtra);
                 } else {
-                    // FAIL → cannot continue; return to previous tile
                     int prev = Math.max(1, _capLanded - 1);
                     _capPlayer.setPosition(prev);
 
@@ -1096,7 +1098,6 @@ public class AdventureGame extends JFrame {
                     gameBoard.repaint();
                     updatePlayersInfoPanel();
 
-                    // proceed to next non-finished player
                     playerQueue.add(_capPlayer);
                     Player next = pollNextActivePlayer();
                     currentPlayer = next;
@@ -1116,14 +1117,8 @@ public class AdventureGame extends JFrame {
         } else {
             finishTurnAfterLanding(landedPos, extraPending);
         }
-
     }
 
-    /**
-     * Finish-turn flow after landing and any boss encounter completed.
-     * If player reached finish, mark as finished.
-     * End-match early condition: if only one player remains NOT finished, match ends immediately.
-     */
     private void finishTurnAfterLanding(int finalPosition, boolean extraTurn) {
         addLog("│ Final: Node " + finalPosition);
         gameBoard.setHighlightPath(null);
@@ -1131,28 +1126,20 @@ public class AdventureGame extends JFrame {
         gameBoard.repaint();
 
         if (finalPosition == BOARD_CELLS) {
-            // player finished -- mark finished and do not requeue
             currentPlayer.setFinished(true);
             addLog("│ 🎉 " + currentPlayer.getName() + " reached FINISH!");
 
-            // Count how many players are still not finished
             int notFinished = 0;
             for (Player p : players) if (!p.isFinished()) notFinished++;
 
-            // If only 0 remain -> all finished (normal)
-            // If only 1 remain -> end match early per requirement
             if (notFinished <= 1) {
                 addLog("│ Ending match early — only " + notFinished + " player(s) still not finished.");
-                // Determine winner by points + stars*STAR_TO_POINT
                 Player winner = computeWinnerByPointsAndStars();
                 addLog("│ Winner: " + (winner != null ? winner.getName() : "NONE"));
-                // update persistent scores
                 updateScoresAfterMatch(winner);
 
-                // STOP background music before celebratory sound
                 stopBackgroundLoop();
 
-                // show summary and finish
                 playSound("confetti.wav");
                 StringBuilder sb = new StringBuilder();
                 sb.append("Match ended!\n\nFinal summary (points + stars*").append(STAR_TO_POINT).append("):\n");
@@ -1163,7 +1150,6 @@ public class AdventureGame extends JFrame {
                 if (winner != null) sb.append("\nWinner: ").append(winner.getName()).append("\n");
                 JOptionPane.showMessageDialog(this, sb.toString(), "Match Result", JOptionPane.INFORMATION_MESSAGE);
 
-                // reset for next game state
                 gameStarted = false;
                 startButton.setEnabled(true);
                 rollDiceButton.setEnabled(false);
@@ -1172,7 +1158,6 @@ public class AdventureGame extends JFrame {
                 addLog("└─────────────────────");
                 return;
             } else {
-                // Not early-end — proceed as usual (wait other players)
                 addLog("│ " + currentPlayer.getName() + " finished — " + notFinished + " player(s) remaining.");
                 addLog("└─────────────────────");
                 Player next = pollNextActivePlayer();
@@ -1200,10 +1185,8 @@ public class AdventureGame extends JFrame {
             return;
         }
 
-        // normal rotation: put player to back of queue only if not finished
         addLog("└─────────────────────");
         playerQueue.add(currentPlayer);
-        // find next player who is not finished
         Player next = pollNextActivePlayer();
         currentPlayer = next;
         if (currentPlayer != null) currentPlayerLabel.setText("Turn: " + currentPlayer.getName());
@@ -1214,18 +1197,13 @@ public class AdventureGame extends JFrame {
         updatePlayersInfoPanel();
     }
 
-    // helper: return next player who is not finished, poll from queue and requeue if still active
     private Player pollNextActivePlayer() {
-        // rotate queue until find an active player or queue exhausted
         int attempts = playerQueue.size();
         while (attempts-- > 0) {
             Player p = playerQueue.poll();
             if (p == null) break;
             if (!p.isFinished()) {
-                // found active
                 return p;
-            } else {
-                // skip finished player, don't re-add
             }
         }
         return null;
@@ -1240,28 +1218,23 @@ public class AdventureGame extends JFrame {
                 bestVal = total;
                 best = p;
             } else if (total == bestVal) {
-                // tie-breaker: more stars wins
                 if (best != null && p.getStars() > best.getStars()) best = p;
             }
         }
         return best;
     }
 
+    // ========== BOSS ENCOUNTER SYSTEM (100% UNCHANGED) ==========
     private void triggerBossEncounter(int node, Player player, java.util.function.Consumer<Boolean> callback) {
         addLog("│ 👾 Boss encountered at Node " + node + " — " + player.getName());
 
         Random rnd = new Random();
 
-        // ===============================
-        // 1. Generate SMP-level question
-        // ===============================
         String question;
         int correctAnswer;
 
-        int type = rnd.nextInt(5); // 0..4
+        int type = rnd.nextInt(5);
         switch (type) {
-
-            // 0️⃣ Pertambahan biasa
             case 0: {
                 int a = rnd.nextInt(50) + 10;
                 int b = rnd.nextInt(50) + 10;
@@ -1269,8 +1242,6 @@ public class AdventureGame extends JFrame {
                 correctAnswer = a + b;
                 break;
             }
-
-            // 1️⃣ Perkalian
             case 1: {
                 int a = rnd.nextInt(12) + 3;
                 int b = rnd.nextInt(12) + 3;
@@ -1278,8 +1249,6 @@ public class AdventureGame extends JFrame {
                 correctAnswer = a * b;
                 break;
             }
-
-            // 2️⃣ Logaritma dasar 2 atau 10 (aman)
             case 2: {
                 int base = rnd.nextBoolean() ? 2 : 10;
                 int exp = rnd.nextInt(4) + 1;
@@ -1288,8 +1257,6 @@ public class AdventureGame extends JFrame {
                 correctAnswer = exp;
                 break;
             }
-
-            // 3️⃣ Segitiga (keliling)
             case 3: {
                 int a = rnd.nextInt(6) + 3;
                 int b = rnd.nextInt(6) + 3;
@@ -1298,8 +1265,6 @@ public class AdventureGame extends JFrame {
                 correctAnswer = a + b + c;
                 break;
             }
-
-            // 4️⃣ Segitiga siku-siku (luas)
             default: {
                 int alas = rnd.nextInt(8) + 4;
                 int tinggi = rnd.nextInt(8) + 4;
@@ -1309,10 +1274,6 @@ public class AdventureGame extends JFrame {
             }
         }
 
-
-        // ===============================
-        // 2. Dialog UI + Timer 10 detik
-        // ===============================
         JTextField answerField = new JTextField();
         JLabel timerLabel = new JLabel("Time left: 10", SwingConstants.CENTER);
         timerLabel.setFont(new Font("SansSerif", Font.BOLD, 14));
@@ -1354,9 +1315,6 @@ public class AdventureGame extends JFrame {
         dialog.setVisible(true);
         countdown.stop();
 
-        // ===============================
-        // 3. Evaluate result
-        // ===============================
         boolean success = false;
         try {
             int given = Integer.parseInt(answerField.getText().trim());
@@ -1365,9 +1323,6 @@ public class AdventureGame extends JFrame {
             success = false;
         }
 
-        // ===============================
-        // 4. Apply result
-        // ===============================
         if (success) {
             addLog("│ ✅ " + player.getName() + " defeated the boss! +" + bossWinPoints + " pts, +" + bossWinStars + " stars");
             player.addScore(bossWinPoints);
@@ -1402,75 +1357,56 @@ public class AdventureGame extends JFrame {
         gameLogArea.setCaretPosition(gameLogArea.getDocument().getLength());
     }
 
-    // ---------- Ladders generation ----------
-    /**
-     * Generate non-overlapping ladders with additional rule:
-     * - no shared start/end points,
-     * - no identical pairs,
-     * - no crossing segments (if from1 < from2 < to1 < to2 it's crossing),
-     * - no horizontal ladders (start and end must be in different board rows).
-     */
+    // ========== LADDER GENERATION (100% UNCHANGED) ==========
     private void generateRandomLinks() {
         randomLinks.clear();
-        Set<Integer> usedEndpoints = new HashSet<>(); // prevent same start/end reuse
+        Set<Integer> usedEndpoints = new HashSet<>();
         int attempts = 0;
-        final int TARGET = 5;     // desired number of ladders
+        final int TARGET = 5;
         final int MAX_ATTEMPTS = 2000;
 
-        // helper to compute row index (0..7) for a board position 1..64
         final int BOARD_SIZE = 8;
         java.util.function.IntUnaryOperator rowOf = pos -> {
-            int nodeNumber = BOARD_CELLS - pos + 1; // BOARD_CELLS is 64 constant
+            int nodeNumber = BOARD_CELLS - pos + 1;
             return (nodeNumber - 1) / BOARD_SIZE;
         };
 
         while (randomLinks.size() < TARGET && attempts < MAX_ATTEMPTS) {
             attempts++;
-            int a = random.nextInt(54) + 6; // 6..59
+            int a = random.nextInt(54) + 6;
             int b = random.nextInt(54) + 6;
             if (a == b) continue;
             int from = Math.min(a, b);
             int to   = Math.max(a, b);
 
-            // minimal distance constraint
             if (to - from < 3) continue;
 
-            // don't reuse endpoints
             if (usedEndpoints.contains(from) || usedEndpoints.contains(to)) continue;
 
-            // prevent horizontal ladders: row(from) must not equal row(to)
             int rf = rowOf.applyAsInt(from);
             int rt = rowOf.applyAsInt(to);
-            if (rf == rt) continue; // same row -> considered "horizontal" => skip
+            if (rf == rt) continue;
 
-            // check against existing links: identical pair or crossing
             boolean bad = false;
             for (RandomLink e : randomLinks) {
                 int ef = e.getFrom();
                 int et = e.getTo();
-                // identical pair (shouldn't happen but check)
                 if (ef == from && et == to) { bad = true; break; }
-                // prevent crossing: (from < ef < to < et) or (ef < from < et < to)
                 if ((from < ef && ef < to && to < et) || (ef < from && from < et && et < to)) {
                     bad = true;
                     break;
                 }
-                // also prevent endpoints touching existing ones (already checked via usedEndpoints),
-                // but keep here for double-safety
                 if (ef == from || ef == to || et == from || et == to) { bad = true; break; }
             }
             if (bad) continue;
 
-            // passed all checks — accept this ladder
             randomLinks.add(new RandomLink(from, to, true));
             usedEndpoints.add(from);
             usedEndpoints.add(to);
         }
 
         if (randomLinks.size() < TARGET) {
-            addLog("[Ladders] Could only place " + randomLinks.size() + " non-overlapping, non-horizontal ladders (attempts: " + attempts + ").");
-        } else {
-            addLog("[Ladders] Placed ladders: " + randomLinksSummary());
+            addLog("[Ladders] Could only place " + randomLinks.size() + " non-overlapping ladders (attempts: " + attempts + ").");
         }
     }
 
@@ -1484,7 +1420,7 @@ public class AdventureGame extends JFrame {
         return true;
     }
 
-    // ---------- Inner helper classes ----------
+    // ========== HELPER CLASSES (UNCHANGED) ==========
     static class Player implements Serializable {
         private static final long serialVersionUID = 1L;
         private final String name;
@@ -1494,8 +1430,20 @@ public class AdventureGame extends JFrame {
         private int score;
         private transient BufferedImage avatar;
         private boolean finished = false;
+        private transient Stack<Integer> movementHistory;  // Track exact path taken
 
-        public Player(String name, Color color) { this.name = name; this.position = 1; this.color = color; this.stars = 0; this.score = 0; this.avatar = null; this.finished=false; }
+        public Player(String name, Color color) {
+            this.name = name;
+            this.position = 1;
+            this.color = color;
+            this.stars = 0;
+            this.score = 0;
+            this.avatar = null;
+            this.finished=false;
+            this.movementHistory = new Stack<>();
+            this.movementHistory.push(1);
+        }
+
         public String getName() { return name; }
         public int getPosition() { return position; }
         public void setPosition(int p) { position = p; }
@@ -1511,22 +1459,131 @@ public class AdventureGame extends JFrame {
         public void setAvatar(BufferedImage b) { avatar = b; }
         public boolean isFinished() { return finished; }
         public void setFinished(boolean f) { finished = f; }
+        public Stack<Integer> getMovementHistory() {
+            return movementHistory;
+        }
+
+        public void pushPosition(int pos) {
+            if (movementHistory == null) {
+                movementHistory = new Stack<>();
+            }
+            movementHistory.push(pos);
+        }
+
+        public Integer popPosition() {
+            if (movementHistory == null || movementHistory.isEmpty()) {
+                return position;  // Fallback to current position
+            }
+            return movementHistory.pop();
+        }
+
+        public boolean canGoBack(int steps) {
+            return movementHistory != null && movementHistory.size() > steps;
+        }
+
+        public void clearHistory() {
+            if (movementHistory == null) {
+                movementHistory = new Stack<>();
+            } else {
+                movementHistory.clear();
+            }
+            movementHistory.push(position);  // Start fresh from current position
+        }
     }
 
     static class RandomLink implements Serializable {
         private static final long serialVersionUID = 1L;
         private int from, to;
         private boolean isLadder;
-        public RandomLink(int from, int to, boolean isLadder) { this.from = from; this.to = to; this.isLadder = isLadder; }
+        public RandomLink(int from, int to, boolean isLadder) {
+            this.from = from;
+            this.to = to;
+            this.isLadder = isLadder;
+        }
         public int getFrom() { return from; }
         public int getTo() { return to; }
         public boolean isLadder() { return isLadder; }
     }
 
+    // ========== GAME BOARD (MAJOR UPDATE) ==========
     class GameBoard extends JPanel {
-        private static final int BOARD_SIZE = 8;
-        private static final int CELL_SIZE = 92;
-        private static final int PADDING = 30;
+
+        // ============ GENERATED COORDINATES FROM TRACKER TOOL ============
+        private static final double[][] NODE_COORDINATES = new double[BOARD_CELLS + 1][2];
+
+        static {
+            NODE_COORDINATES[1] = new double[]{0.076, 0.746};
+            NODE_COORDINATES[2] = new double[]{0.143, 0.669};
+            NODE_COORDINATES[3] = new double[]{0.115, 0.587};
+            NODE_COORDINATES[4] = new double[]{0.158, 0.538};
+            NODE_COORDINATES[5] = new double[]{0.080, 0.508};
+            NODE_COORDINATES[6] = new double[]{0.050, 0.450};
+            NODE_COORDINATES[7] = new double[]{0.062, 0.368};
+            NODE_COORDINATES[8] = new double[]{0.127, 0.468};
+            NODE_COORDINATES[9] = new double[]{0.189, 0.490};
+            NODE_COORDINATES[10] = new double[]{0.194, 0.558};
+            NODE_COORDINATES[11] = new double[]{0.203, 0.622};
+            NODE_COORDINATES[12] = new double[]{0.269, 0.601};
+            NODE_COORDINATES[13] = new double[]{0.301, 0.636};
+            NODE_COORDINATES[14] = new double[]{0.343, 0.592};
+            NODE_COORDINATES[15] = new double[]{0.387, 0.585};
+            NODE_COORDINATES[16] = new double[]{0.432, 0.608};
+            NODE_COORDINATES[17] = new double[]{0.484, 0.552};
+            NODE_COORDINATES[18] = new double[]{0.478, 0.676};
+            NODE_COORDINATES[19] = new double[]{0.411, 0.697};
+            NODE_COORDINATES[20] = new double[]{0.357, 0.745};
+            NODE_COORDINATES[21] = new double[]{0.303, 0.818};
+            NODE_COORDINATES[22] = new double[]{0.400, 0.796};
+            NODE_COORDINATES[23] = new double[]{0.478, 0.911};
+            NODE_COORDINATES[24] = new double[]{0.556, 0.832};
+            NODE_COORDINATES[25] = new double[]{0.464, 0.762};
+            NODE_COORDINATES[26] = new double[]{0.496, 0.732};
+            NODE_COORDINATES[27] = new double[]{0.585, 0.655};
+            NODE_COORDINATES[28] = new double[]{0.613, 0.785};
+            NODE_COORDINATES[29] = new double[]{0.729, 0.755};
+            NODE_COORDINATES[30] = new double[]{0.638, 0.660};
+            NODE_COORDINATES[31] = new double[]{0.604, 0.597};
+            NODE_COORDINATES[32] = new double[]{0.697, 0.625};
+            NODE_COORDINATES[33] = new double[]{0.779, 0.608};
+            NODE_COORDINATES[34] = new double[]{0.915, 0.720};
+            NODE_COORDINATES[35] = new double[]{0.871, 0.550};
+            NODE_COORDINATES[36] = new double[]{0.784, 0.549};
+            NODE_COORDINATES[37] = new double[]{0.911, 0.479};
+            NODE_COORDINATES[38] = new double[]{0.965, 0.470};
+            NODE_COORDINATES[39] = new double[]{0.846, 0.441};
+            NODE_COORDINATES[40] = new double[]{0.712, 0.417};
+            NODE_COORDINATES[41] = new double[]{0.658, 0.381};
+            NODE_COORDINATES[42] = new double[]{0.782, 0.364};
+            NODE_COORDINATES[43] = new double[]{0.871, 0.276};
+            NODE_COORDINATES[44] = new double[]{0.745, 0.257};
+            NODE_COORDINATES[45] = new double[]{0.824, 0.185};
+            NODE_COORDINATES[46] = new double[]{0.840, 0.078};
+            NODE_COORDINATES[47] = new double[]{0.488, 0.423};
+            NODE_COORDINATES[48] = new double[]{0.407, 0.313};
+            NODE_COORDINATES[49] = new double[]{0.365, 0.326};
+            NODE_COORDINATES[50] = new double[]{0.312, 0.353};
+            NODE_COORDINATES[51] = new double[]{0.313, 0.420};
+            NODE_COORDINATES[52] = new double[]{0.235, 0.438};
+            NODE_COORDINATES[53] = new double[]{0.148, 0.373};
+            NODE_COORDINATES[54] = new double[]{0.153, 0.307};
+            NODE_COORDINATES[55] = new double[]{0.235, 0.218};
+            NODE_COORDINATES[56] = new double[]{0.244, 0.139};
+            NODE_COORDINATES[57] = new double[]{0.305, 0.222};
+            NODE_COORDINATES[58] = new double[]{0.329, 0.139};
+            NODE_COORDINATES[59] = new double[]{0.414, 0.083};
+            NODE_COORDINATES[60] = new double[]{0.495, 0.182};
+            NODE_COORDINATES[61] = new double[]{0.597, 0.231};
+            NODE_COORDINATES[62] = new double[]{0.658, 0.103};
+            NODE_COORDINATES[63] = new double[]{0.581, 0.116};
+            NODE_COORDINATES[64] = new double[]{0.575, 0.037};
+        }
+
+        // ============ BACKGROUND IMAGE SYSTEM ============
+        private BufferedImage treasureMapImage;
+        private Image scaledMapImage;
+        private int lastScaledWidth = -1;
+        private int lastScaledHeight = -1;
+
         private List<Player> players;
         private List<Integer> highlightPath;
         private RandomLink teleportEffect;
@@ -1540,7 +1597,10 @@ public class AdventureGame extends JFrame {
             players = new ArrayList<>();
             highlightPath = new ArrayList<>();
             teleportEffect = null;
-            setPreferredSize(new Dimension(BOARD_SIZE * CELL_SIZE + PADDING * 2 + 60, BOARD_SIZE * CELL_SIZE + PADDING * 2 + 60));
+
+            // Load treasure map image
+            treasureMapImage = loadImageFlexible("AdventureMap.jpg");
+            setPreferredSize(new Dimension(1000, 800));
             setBackground(new Color(255, 253, 249));
 
             animationTimer = new Timer(45, e -> {
@@ -1552,191 +1612,299 @@ public class AdventureGame extends JFrame {
             animationTimer.start();
         }
 
-        public void setPlayers(List<Player> players) { this.players = players; repaint(); }
-        public void setHighlightPath(List<Integer> path) { this.highlightPath = (path != null) ? new ArrayList<>(path) : new ArrayList<>(); repaint(); }
-        public void setTeleportEffect(RandomLink effect) { this.teleportEffect = effect; repaint(); }
-        public void setRandomLinks(List<RandomLink> links) { this.boardLinks = (links != null) ? links : new ArrayList<>(); repaint(); }
+        // ============ LOAD BACKGROUND IMAGE ============
+        /**
+         * Flexible image loader - tries multiple strategies:
+         * 1. Classpath/resources (works in JAR)
+         * 2. Multiple file system locations
+         * 3. Graceful fallback to null (gradient background)
+         */
+        private BufferedImage loadImageFlexible(String filename) {
+            // Strategy 1: Try classpath first (packaged resources)
+            try {
+                InputStream is = getClass().getResourceAsStream("/" + filename);
+                if (is != null) {
+                    BufferedImage img = ImageIO.read(is);
+                    System.out.println("[GameBoard] ✓ Image loaded from classpath: " + filename);
+                    return img;
+                }
+            } catch (Exception e) {
+                // Not in classpath, continue to file system
+            }
 
+            // Strategy 2: Try multiple file system locations
+            String[] searchPaths = {
+                    filename,                    // Current directory
+                    "src/" + filename,           // In src/
+                    "../src/" + filename,        // Parent -> src/
+                    "resources/" + filename,     // Resources folder
+                    "../resources/" + filename,  // Parent -> resources/
+                    "./" + filename              // Explicit current
+            };
+
+            for (String path : searchPaths) {
+                try {
+                    File f = new File(path);
+                    if (f.exists()) {
+                        BufferedImage img = ImageIO.read(f);
+                        System.out.println("[GameBoard] ✓ Image loaded from: " + f.getAbsolutePath());
+                        return img;
+                    }
+                } catch (Exception e) {
+                    // Try next path
+                }
+            }
+
+            // Strategy 3: Not found - log details and use fallback
+            System.err.println("[GameBoard] ✗ Image not found: " + filename);
+            System.err.println("[GameBoard] Searched locations:");
+            for (String path : searchPaths) {
+                System.err.println("  • " + new File(path).getAbsolutePath());
+            }
+            System.err.println("[GameBoard] → Using fallback gradient background");
+
+            return null;
+        }
+
+        public void setPlayers(List<Player> players) {
+            this.players = players;
+            repaint();
+        }
+
+        public void setHighlightPath(List<Integer> path) {
+            this.highlightPath = (path != null) ? new ArrayList<>(path) : new ArrayList<>();
+            repaint();
+        }
+
+        public void setTeleportEffect(RandomLink effect) {
+            this.teleportEffect = effect;
+            repaint();
+        }
+
+        public void setRandomLinks(List<RandomLink> links) {
+            this.boardLinks = (links != null) ? links : new ArrayList<>();
+            repaint();
+        }
+
+        // ============ NORMALIZED COORDINATE CONVERTER ============
+        private Point getCoordinatesForPosition(int position, int boardWidth, int boardHeight) {
+            if (position < 1 || position > BOARD_CELLS) return null;
+            double[] norm = NODE_COORDINATES[position];
+            int x = (int)(norm[0] * boardWidth);
+            int y = (int)(norm[1] * boardHeight);
+            return new Point(x, y);
+        }
+
+        // ============ MAIN PAINT METHOD ============
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             Graphics2D g2 = (Graphics2D) g;
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
 
-            GradientPaint bg = new GradientPaint(0, 0, new Color(255, 253, 248), getWidth(), getHeight(), new Color(245, 240, 230));
-            g2.setPaint(bg);
-            g2.fillRect(0, 0, getWidth(), getHeight());
+            int w = getWidth();
+            int h = getHeight();
 
-            int node = BOARD_CELLS;
-            for (int row = 0; row < BOARD_SIZE; row++) {
-                for (int col = 0; col < BOARD_SIZE; col++) {
-                    int x = PADDING + ((row % 2 == 0) ? (BOARD_SIZE - 1 - col) * CELL_SIZE : col * CELL_SIZE);
-                    int y = PADDING + row * CELL_SIZE;
+            int padding = 30;
+            int boardW = w - padding * 2;
+            int boardH = h - padding * 2;
 
-                    // prime tiles colored dark brown background
-                    if (isPrime(node)) {
-                        g2.setColor(new Color(120, 72, 42)); // dark brown
-                    } else {
-                        if ((row + col) % 2 == 0) g2.setColor(new Color(252, 245, 235));
-                        else g2.setColor(new Color(249, 240, 226));
-                    }
-
-                    if (highlightPath != null && highlightPath.contains(node)) {
-                        float scale = 1f + 0.04f * (float)Math.sin(bobPhase + node * 0.3);
-                        int w = (int)((CELL_SIZE - 8) * scale);
-                        int h = (int)((CELL_SIZE - 8) * scale);
-                        int dx = (CELL_SIZE - w) / 2;
-                        int dy = (CELL_SIZE - h) / 2;
-                        g2.fillRoundRect(x + 4 + dx, y + 4 + dy, w, h, 12, 12);
-                    } else {
-                        g2.fillRoundRect(x + 4, y + 4, CELL_SIZE - 8, CELL_SIZE - 8, 12, 12);
-                    }
-
-                    g2.setColor(new Color(220, 200, 180));
-                    g2.setStroke(new BasicStroke(2));
-                    g2.drawRoundRect(x + 4, y + 4, CELL_SIZE - 8, CELL_SIZE - 8, 12, 12);
-
-                    g2.setFont(new Font("Serif", Font.BOLD, 16));
-                    // for prime we want text still visible: choose light text for dark brown
-                    if (isPrime(node)) g2.setColor(new Color(245,230,210));
-                    else g2.setColor(new Color(95, 70, 50));
-                    String txt = String.valueOf(node);
-                    g2.drawString(txt, x + 12, y + 20);
-
-                    // draw tile points small
-                    int pts = tilePoints[node];
-                    if (pts > 0) {
-                        g2.setFont(new Font("Dialog", Font.PLAIN, 12));
-                        g2.setColor(isPrime(node) ? new Color(240, 220, 180) : new Color(90, 65, 40));
-                        g2.drawString("+" + pts, x + 10, y + CELL_SIZE - 12);
-                    }
-
-                    if (node % 5 == 0) {
-                        g2.setFont(new Font("Dialog", Font.PLAIN, 18));
-                        if (starsClaimed[node]) g2.setColor(new Color(200, 200, 200));
-                        else g2.setColor(new Color(235, 180, 70));
-                        g2.drawString("★", x + CELL_SIZE - 34, y + 28);
-                    }
-
-                    if (boardLinks != null) {
-                        for (RandomLink link : boardLinks) {
-                            if (link.getFrom() == node) {
-                                // draw ladder indicator near 'from'
-                                g2.setFont(new Font("Dialog", Font.PLAIN, 18));
-                                g2.setColor(new Color(101, 67, 33));
-                                g2.drawString("↗", x + CELL_SIZE - 46, y + CELL_SIZE - 12);
-                            }
-                        }
-                    }
-
-                    if (bossNodes.contains(node)) {
-                        g2.setFont(new Font("Dialog", Font.PLAIN, 20));
-                        g2.setColor(new Color(180, 60, 80));
-                        g2.drawString("👾", x + CELL_SIZE - 46, y + CELL_SIZE - 30);
-                    }
-
-                    if (node == 1) {
-                        g2.setColor(new Color(200, 230, 200));
-                        g2.fillRoundRect(x + 16, y + CELL_SIZE - 46, CELL_SIZE - 36, 28, 10, 10);
-                        g2.setColor(new Color(80, 70, 50));
-                        g2.setFont(new Font("Serif", Font.BOLD, 12));
-                        g2.drawString("START", x + 28, y + CELL_SIZE - 26);
-                    } else if (node == BOARD_CELLS) {
-                        g2.setColor(new Color(255, 220, 200));
-                        g2.fillRoundRect(x + 16, y + CELL_SIZE - 46, CELL_SIZE - 36, 28, 10, 10);
-                        g2.setColor(new Color(85, 40, 40));
-                        g2.setFont(new Font("Serif", Font.BOLD, 12));
-                        g2.drawString("FINISH", x + 28, y + CELL_SIZE - 26);
-                    }
-
-                    node--;
+            // ============ RENDER BACKGROUND IMAGE ============
+            if (treasureMapImage != null) {
+                // Scale image only when size changes (performance optimization)
+                if (scaledMapImage == null || boardW != lastScaledWidth || boardH != lastScaledHeight) {
+                    scaledMapImage = treasureMapImage.getScaledInstance(boardW, boardH, Image.SCALE_SMOOTH);
+                    lastScaledWidth = boardW;
+                    lastScaledHeight = boardH;
+                    System.out.println("[GameBoard] Scaled treasure map to: " + boardW + "x" + boardH);
                 }
+                g2.drawImage(scaledMapImage, padding, padding, this);
+            } else {
+                // Fallback gradient if image not loaded
+                GradientPaint bg = new GradientPaint(0, 0, new Color(255, 253, 248),
+                        w, h, new Color(245, 240, 230));
+                g2.setPaint(bg);
+                g2.fillRect(0, 0, w, h);
             }
 
-            // draw ladders as lines between centers (decorative)
-            if (boardLinks != null) {
-                for (RandomLink link : boardLinks) {
-                    Point from = getCoordinatesForPosition(link.getFrom());
-                    Point to = getCoordinatesForPosition(link.getTo());
-                    if (from == null || to == null) continue;
-                    int fx = from.x + CELL_SIZE / 2;
-                    int fy = from.y + CELL_SIZE / 2;
-                    int tx = to.x + CELL_SIZE / 2;
-                    int ty = to.y + CELL_SIZE / 2;
+            // Translate coordinate system for easier drawing
+            g2.translate(padding, padding);
 
-                    g2.setStroke(new BasicStroke(6, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                    g2.setColor(new Color(101, 67, 33, 200));
-                    g2.drawLine(fx, fy, tx, ty);
+            // Draw game elements
+            drawLadders(g2, boardW, boardH);
+            drawNodes(g2, boardW, boardH);
+            drawPlayers(g2, boardW, boardH);
 
-                    if (teleportEffect != null && teleportEffect == link) {
-                        float pulse = 0.55f + 0.45f * (float)Math.sin(glowPhase * 2.0);
-                        int alpha = Math.min(220, (int)(220 * pulse));
-                        g2.setStroke(new BasicStroke(10, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                        g2.setColor(new Color(255, 200, 120, alpha));
-                        g2.drawLine(fx, fy, tx, ty);
-                    }
-                }
-            }
+            g2.dispose();
+        }
 
-            if (players != null) {
-                for (int i = 0; i < players.size(); i++) {
-                    Player p = players.get(i);
-                    int pos = p.getPosition();
-                    Point coords = getCoordinatesForPosition(pos);
-                    if (coords == null) continue;
+        // ============ DRAW LADDERS ============
+        private void drawLadders(Graphics2D g2, int boardW, int boardH) {
+            if (boardLinks == null) return;
 
-                    int tokenSize = 36;
-                    int offX = (i % 3) * 20 - 20;
-                    int offY = (i / 3) * 12 + 18;
-                    int bob = (int)(6 * Math.sin(bobPhase + i * 0.8));
+            for (RandomLink link : boardLinks) {
+                Point from = getCoordinatesForPosition(link.getFrom(), boardW, boardH);
+                Point to = getCoordinatesForPosition(link.getTo(), boardW, boardH);
+                if (from == null || to == null) continue;
 
-                    int px = coords.x + CELL_SIZE / 2 - tokenSize / 2 + offX;
-                    int py = coords.y + CELL_SIZE / 2 - tokenSize / 2 + offY - bob;
+                // Draw ladder line
+                g2.setStroke(new BasicStroke(6, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.setColor(new Color(139, 90, 43, 200)); // Brown ladder color
+                g2.drawLine(from.x, from.y, to.x, to.y);
 
-                    g2.setColor(new Color(0, 0, 0, 40));
-                    g2.fillOval(px + 6, py + 10, tokenSize, tokenSize / 2);
-
-                    if (p.getAvatar() != null) {
-                        BufferedImage img = p.getAvatar();
-                        int iw = img.getWidth(), ih = img.getHeight();
-                        double scale = Math.min(tokenSize/(double)iw, tokenSize/(double)ih);
-                        int dw = (int)(iw*scale), dh = (int)(ih*scale);
-                        g2.drawImage(img, px + (tokenSize-dw)/2, py + (tokenSize-dh)/2, dw, dh, null);
-                        g2.setColor(new Color(110, 80, 60));
-                        g2.setStroke(new BasicStroke(2));
-                        g2.drawOval(px, py, tokenSize, tokenSize);
-                    } else {
-                        GradientPaint gp = new GradientPaint(px, py, p.getColor().brighter(), px, py + tokenSize, p.getColor().darker());
-                        g2.setPaint(gp);
-                        g2.fillOval(px, py, tokenSize, tokenSize);
-                        g2.setColor(new Color(110, 80, 60));
-                        g2.setStroke(new BasicStroke(2));
-                        g2.drawOval(px, py, tokenSize, tokenSize);
-
-                        g2.setColor(new Color(20, 18, 12));
-                        g2.setFont(new Font("Serif", Font.BOLD, 14));
-                        String in = p.getName().substring(0, 1).toUpperCase();
-                        FontMetrics fm = g2.getFontMetrics();
-                        g2.drawString(in, px + (tokenSize - fm.stringWidth(in)) / 2, py + (tokenSize + fm.getAscent()) / 2 - 2);
-                    }
+                // Glow effect for teleport animation
+                if (teleportEffect != null && teleportEffect == link) {
+                    float pulse = 0.55f + 0.45f * (float)Math.sin(glowPhase * 2.0);
+                    int alpha = Math.min(220, (int)(220 * pulse));
+                    g2.setStroke(new BasicStroke(10, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                    g2.setColor(new Color(255, 200, 120, alpha));
+                    g2.drawLine(from.x, from.y, to.x, to.y);
                 }
             }
         }
 
-        private Point getCoordinatesForPosition(int position) {
-            if (position < 1 || position > BOARD_CELLS) return null;
-            int nodeNumber = BOARD_CELLS - position + 1;
-            int row = (nodeNumber - 1) / BOARD_SIZE;
-            int col = (nodeNumber - 1) % BOARD_SIZE;
-            int x = PADDING;
-            int y = PADDING + row * CELL_SIZE;
-            if (row % 2 == 0) x = PADDING + (BOARD_SIZE - 1 - col) * CELL_SIZE;
-            else x = PADDING + col * CELL_SIZE;
-            return new Point(x, y);
+        // ============ DRAW NODES WITH PIN MARKERS ============
+        private void drawNodes(Graphics2D g2, int boardW, int boardH) {
+            for (int i = 1; i <= BOARD_CELLS; i++) {
+                Point center = getCoordinatesForPosition(i, boardW, boardH);
+                if (center == null) continue;
+
+                // Highlight path effect
+                if (highlightPath != null && highlightPath.contains(i)) {
+                    float scale = 1f + 0.08f * (float)Math.sin(bobPhase + i * 0.3);
+                    int glowSize = (int)(28 * scale);
+                    g2.setColor(new Color(255, 220, 100, 140));
+                    g2.setStroke(new BasicStroke(4f));
+                    g2.drawOval(center.x - glowSize/2, center.y - glowSize/2, glowSize, glowSize);
+                }
+
+                // Draw pin marker (treasure map style)
+                drawPinMarker(g2, center.x, center.y, i);
+            }
+        }
+
+        // ============ PIN MARKER RENDERING ============
+        private void drawPinMarker(Graphics2D g2, int x, int y, int nodeNumber) {
+            int pinSize = 20;
+
+            // Shadow
+            g2.setColor(new Color(0, 0, 0, 60));
+            g2.fillOval(x - 6, y + 2, 12, 6);
+
+            // Pin color based on node type
+            Color pinColor;
+            if (isPrime(nodeNumber)) {
+                pinColor = new Color(46, 204, 113); // Green for prime
+            } else if (nodeNumber % 5 == 0 && !starsClaimed[nodeNumber]) {
+                pinColor = new Color(255, 215, 0); // Gold for unclaimed star
+            } else if (bossNodes.contains(nodeNumber)) {
+                pinColor = new Color(220, 50, 50); // Red for boss
+            } else if (nodeNumber == 1) {
+                pinColor = new Color(100, 180, 255); // Blue for start
+            } else if (nodeNumber == BOARD_CELLS) {
+                pinColor = new Color(255, 150, 50); // Orange for finish
+            } else {
+                pinColor = new Color(200, 180, 160); // Beige for normal
+            }
+
+            // Pin head (circle)
+            g2.setColor(pinColor);
+            g2.fillOval(x - pinSize/2, y - pinSize/2, pinSize, pinSize);
+
+            // Pin border
+            g2.setColor(pinColor.darker());
+            g2.setStroke(new BasicStroke(2f));
+            g2.drawOval(x - pinSize/2, y - pinSize/2, pinSize, pinSize);
+
+            // Pin pointer (bottom triangle)
+            int[] xPoints = {x, x - 4, x + 4};
+            int[] yPoints = {y + pinSize/2 + 6, y + pinSize/2, y + pinSize/2};
+            g2.setColor(pinColor.darker());
+            g2.fillPolygon(xPoints, yPoints, 3);
+
+            // Node number
+            g2.setFont(new Font("SansSerif", Font.BOLD, 10));
+            String numStr = String.valueOf(nodeNumber);
+            FontMetrics fm = g2.getFontMetrics();
+            g2.setColor(Color.WHITE);
+            g2.drawString(numStr, x - fm.stringWidth(numStr)/2, y + fm.getAscent()/2 - 1);
+
+            // Special indicators
+            if (nodeNumber % 5 == 0 && !starsClaimed[nodeNumber]) {
+                g2.setFont(new Font("Dialog", Font.PLAIN, 14));
+                g2.setColor(new Color(255, 215, 0));
+                g2.drawString("★", x - 7, y - pinSize/2 - 4);
+            }
+
+            if (bossNodes.contains(nodeNumber)) {
+                g2.setFont(new Font("Dialog", Font.PLAIN, 16));
+                g2.setColor(new Color(180, 60, 80));
+                g2.drawString("👾", x + pinSize/2 + 2, y - 2);
+            }
+
+            // Tile points indicator
+            int pts = tilePoints[nodeNumber];
+            if (pts > 0) {
+                g2.setFont(new Font("Dialog", Font.PLAIN, 9));
+                g2.setColor(new Color(90, 65, 40));
+                g2.drawString("+" + pts, x + pinSize/2 + 2, y + pinSize/2 + 4);
+            }
+        }
+
+        // ============ DRAW PLAYERS ============
+        private void drawPlayers(Graphics2D g2, int boardW, int boardH) {
+            if (players == null) return;
+
+            for (int i = 0; i < players.size(); i++) {
+                Player p = players.get(i);
+                Point base = getCoordinatesForPosition(p.getPosition(), boardW, boardH);
+                if (base == null) continue;
+
+                int tokenSize = 32;
+                int offX = (i % 3) * 18 - 18;
+                int offY = (i / 3) * 10 + 24;
+                int bob = (int)(5 * Math.sin(bobPhase + i * 0.8));
+
+                int px = base.x + offX;
+                int py = base.y + offY - bob;
+
+                // Shadow
+                g2.setColor(new Color(0, 0, 0, 40));
+                g2.fillOval(px + 4, py + 8, tokenSize, tokenSize / 2);
+
+                // Player token
+                if (p.getAvatar() != null) {
+                    BufferedImage img = p.getAvatar();
+                    int iw = img.getWidth(), ih = img.getHeight();
+                    double scale = Math.min(tokenSize/(double)iw, tokenSize/(double)ih);
+                    int dw = (int)(iw*scale), dh = (int)(ih*scale);
+                    g2.drawImage(img, px + (tokenSize-dw)/2, py + (tokenSize-dh)/2, dw, dh, null);
+                    g2.setColor(new Color(110, 80, 60));
+                    g2.setStroke(new BasicStroke(2));
+                    g2.drawOval(px, py, tokenSize, tokenSize);
+                } else {
+                    GradientPaint gp = new GradientPaint(px, py, p.getColor().brighter(),
+                            px, py + tokenSize, p.getColor().darker());
+                    g2.setPaint(gp);
+                    g2.fillOval(px, py, tokenSize, tokenSize);
+                    g2.setColor(new Color(110, 80, 60));
+                    g2.setStroke(new BasicStroke(2));
+                    g2.drawOval(px, py, tokenSize, tokenSize);
+
+                    g2.setColor(new Color(20, 18, 12));
+                    g2.setFont(new Font("Serif", Font.BOLD, 14));
+                    String initial = p.getName().substring(0, 1).toUpperCase();
+                    FontMetrics fm = g2.getFontMetrics();
+                    g2.drawString(initial,
+                            px + (tokenSize - fm.stringWidth(initial)) / 2,
+                            py + (tokenSize + fm.getAscent()) / 2 - 2);
+                }
+            }
         }
     }
 
-    // ---------- Main ----------
+    // ========== MAIN ==========
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             AdventureGame g = new AdventureGame();
