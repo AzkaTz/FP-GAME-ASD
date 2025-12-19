@@ -34,7 +34,7 @@ public class AdventureGame extends JFrame {
     private boolean gameStarted = false;
     private Random random;
     private boolean isAnimating = false;
-
+    // SCORERECORD
     private Map<String, ScoreRecord> scoreMap;
     private final File scoreFile;
 
@@ -54,6 +54,7 @@ public class AdventureGame extends JFrame {
     public AdventureGame() {
         random = new Random();
         players = new ArrayList<>();
+        // GILIRAN
         playerQueue = new LinkedList<>();
         scoreMap = new HashMap<>();
 
@@ -578,7 +579,7 @@ public class AdventureGame extends JFrame {
             }
         }
     }
-
+    // AVATAR
     private void promptEditAvatar() {
         if (players == null || players.isEmpty()) {
             JOptionPane.showMessageDialog(this, "No players to edit.", "Info", JOptionPane.INFORMATION_MESSAGE);
@@ -614,6 +615,7 @@ public class AdventureGame extends JFrame {
                 JOptionPane.QUESTION_MESSAGE);
         if (numPlayersStr == null) return;
         try {
+            // 2-6
             int numPlayers = Integer.parseInt(numPlayersStr);
             if (numPlayers < 2 || numPlayers > 6) {
                 JOptionPane.showMessageDialog(this, "Please enter 2-6 players.", "Invalid", JOptionPane.ERROR_MESSAGE);
@@ -829,7 +831,7 @@ public class AdventureGame extends JFrame {
         }
     }
 
-    // ========== DICE & MOVEMENT LOGIC (100% UNCHANGED) ==========
+    // ========== DADU DUA ARAH (100% UNCHANGED) ==========
     private void rollDiceWithAnimation() {
         if (!gameStarted || currentPlayer == null || isAnimating) return;
 
@@ -864,7 +866,7 @@ public class AdventureGame extends JFrame {
                     diceResultLabel.setForeground(finalColor);
                     dicePanel.setBackground(new Color(255, 255, 250));
                     int oldPosition = currentPlayer.getPosition();
-
+                    // PRIME LADDER
                     boolean usePrimePower = isPrime(oldPosition);
                     addLog("┌─────────────────────");
                     addLog("│ " + currentPlayer.getName());
@@ -878,7 +880,7 @@ public class AdventureGame extends JFrame {
         spinner.setInitialDelay(0);
         spinner.start();
     }
-
+    // KOLEKSI BINTANG
     private boolean awardStarIfAvailable(Player p, int pos) {
         if (pos < 1 || pos > BOARD_CELLS) return false;
         if (pos % 5 != 0) return false;
@@ -892,7 +894,7 @@ public class AdventureGame extends JFrame {
         updatePlayersInfoPanel();
         return true;
     }
-
+    // TILE POINT
     private void awardTilePoints(Player p, int pos) {
         if (pos < 1 || pos > BOARD_CELLS) return;
         int pts = tilePoints[pos];
@@ -968,6 +970,7 @@ public class AdventureGame extends JFrame {
         });
         t.start();
     }
+    // ANIMASI SOUND & HIGHLIGHT
     private void animateMovementWithAutoLadder(int startPos, int moves, boolean isForward, boolean usePrimePower) {
         final int[] currentStep = {0};
         final int[] remaining = {moves};
@@ -1174,7 +1177,7 @@ public class AdventureGame extends JFrame {
                 return;
             }
         }
-
+        // EXTRATURN
         if (extraTurn) {
             addLog("│ ➜ Extra turn for " + currentPlayer.getName() + " (keeps turn)");
             addLog("└─────────────────────");
@@ -1420,7 +1423,7 @@ public class AdventureGame extends JFrame {
         return true;
     }
 
-    // ========== HELPER CLASSES (UNCHANGED) ==========
+    // ========== STACK MOVEMENT (UNCHANGED) ==========
     static class Player implements Serializable {
         private static final long serialVersionUID = 1L;
         private final String name;
@@ -1459,6 +1462,7 @@ public class AdventureGame extends JFrame {
         public void setAvatar(BufferedImage b) { avatar = b; }
         public boolean isFinished() { return finished; }
         public void setFinished(boolean f) { finished = f; }
+        //STACK MOVEMENT
         public Stack<Integer> getMovementHistory() {
             return movementHistory;
         }
@@ -1509,6 +1513,7 @@ public class AdventureGame extends JFrame {
     class GameBoard extends JPanel {
 
         // ============ GENERATED COORDINATES FROM TRACKER TOOL ============
+        // koordinat
         private static final double[][] NODE_COORDINATES = new double[BOARD_CELLS + 1][2];
 
         static {
