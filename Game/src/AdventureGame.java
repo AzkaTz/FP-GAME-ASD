@@ -1861,13 +1861,16 @@ public class AdventureGame extends JFrame {
                 Point base = getCoordinatesForPosition(p.getPosition(), boardW, boardH);
                 if (base == null) continue;
 
-                int tokenSize = 32;
-                int offX = (i % 3) * 18 - 18;
-                int offY = (i / 3) * 10 + 24;
-                int bob = (int)(5 * Math.sin(bobPhase + i * 0.8));
+                int tokenSize = 24;
+                int offX = (i % 3 - 1) * 14;     // horizontal spread kecil
+                int offY = (i / 3) * 8;         // vertikal kecil (tanpa offset besar)
 
-                int px = base.x + offX;
-                int py = base.y + offY - bob;
+                int bob = (int)(4 * Math.sin(bobPhase + i * 0.8));
+
+                // PUSATKAN token ke node
+                int px = base.x - tokenSize / 2 + offX;
+                int py = base.y - tokenSize / 2 + offY - bob;
+
 
                 // Shadow
                 g2.setColor(new Color(0, 0, 0, 40));
